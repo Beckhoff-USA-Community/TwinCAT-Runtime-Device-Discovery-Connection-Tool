@@ -1,11 +1,10 @@
 # TwinCAT Runtime Device Discovery & Connection Tool
 
-A PowerShell script that automatically discovers TwinCAT runtime devices on your network via ADS broadcast search and provides direct OS-level connection options including SSH, RDP, WinSCP, and CERHost - bypassing the need for TwinCAT XAE for basic system administration tasks.
+A PowerShell script that automatically discovers TwinCAT runtime devices on your network via ADS broadcast search and provides direct OS-level connection options including SSH, RDP, WinSCP, and CERHost.
 
 ## Features
 
 - **Automatic Runtime Discovery**: Uses ADS route discovery to find all TwinCAT runtime devices on the network
-- **Direct OS Access**: Provides native operating system connections without requiring TwinCAT XAE
 - **Multi-Platform Runtime Support**: Supports TwinCAT runtimes on Windows, TcBSD, TcRTOS, Linux, and Windows CE
 - **Multiple OS Connection Methods**:
   - Web-based Device Manager access
@@ -19,7 +18,7 @@ A PowerShell script that automatically discovers TwinCAT runtime devices on your
 
 ## Prerequisites
 
-- **PowerShell 5.0+** (recommended)
+- **Windows PowerShell or Powershell Core**
 - **TcXaeMgmt PowerShell Module 6.2.0 or greater** (automatically installed if not present)
 - **Network Access** to TwinCAT runtime devices
 - **Optional Tools**:
