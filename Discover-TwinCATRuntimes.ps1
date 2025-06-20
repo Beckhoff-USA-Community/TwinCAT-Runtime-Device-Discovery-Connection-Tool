@@ -2,7 +2,7 @@
 .SYNOPSIS
     Discover TwinCAT runtime devices, via ADS broadcast search and offer connection options.
 .DESCRIPTION
-    This script discovers TwinCAT runtime devices on the network and provides connection options such as SSH, RDP, and WinSCP.
+    This script discovers TwinCAT runtime devices on the network and provides connection options such as SSH, RDP, FTP, and WinSCP.
     It uses the TcXaeMgmt PowerShell module to perform ADS route discovery and allows users to connect to devices via various methods.
     If CERHost.exe is not present when connecting to a CE device, it will automatically download and extract it.
 .PARAMETER TimeoutSeconds
@@ -99,6 +99,28 @@ function Test-CERHostAvailability {
     param(
         [string]$IPAddress,
         [int]$Port               = 987,
+        [int]$TimeoutMilliseconds = 1000
+    )
+    try {
+        $tcpClient   = New-Object System.Net.Sockets.TcpClient
+        $asyncResult = $tcpClient.BeginConnect($IPAddress, $Port, $null, $null)
+        if ($asyncResult.AsyncWaitHandle.WaitOne($TimeoutMilliseconds, $false)) {
+            $tcpClient.EndConnect($asyncResult)
+            return $true
+        }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        if ($tcpClient) { $tcpClient.Close() }
+    }
+}
+
+function Test-FTPAvailability {
+    [CmdletBinding()]
+    param(
+        [string]$IPAddress,
+        [int]$Port               = 21,
         [int]$TimeoutMilliseconds = 1000
     )
     try {
@@ -343,13 +365,23 @@ function Show-ConnectionMenu {
                 break
             }
             ($Route.RTSystem -match "CE") {
-                $isAvailable = Test-CERHostAvailability -IPAddress $Route.Address
+                $isCERHostAvailable = Test-CERHostAvailability -IPAddress $Route.Address
+                $isFTPAvailable = Test-FTPAvailability -IPAddress $Route.Address
+                
                 Write-Host "   1) Open Beckhoff Device Manager webpage ($DeviceManagerUrl)"
-                if ($isAvailable) {
+                
+                if ($isCERHostAvailable) {
                     Write-Host "   2) Start CERHost Remote Desktop session" -ForegroundColor Green
                 } else {
                     Write-Host "   2) Start CERHost Remote Desktop session" -ForegroundColor Red
                     Write-Host "      Note: CERHost port (987) is not open. Enable CERHost on the host PC." -ForegroundColor Yellow
+                }
+                
+                if ($isFTPAvailable) {
+                    Write-Host "   3) Open FTP connection in Windows File Explorer" -ForegroundColor Green
+                } else {
+                    Write-Host "   3) Open FTP connection in Windows File Explorer" -ForegroundColor Red
+                    Write-Host "      Note: FTP port (21) is not open. Enable FTP server on the device." -ForegroundColor Yellow
                 }
                 break
             }
@@ -432,6 +464,17 @@ smart sizing:i:1
                         }
                     } catch {
                         Start-Process "https://winscp.net/eng/download.php"
+                    }
+                } elseif ($Route.RTSystem -match "CE") {
+                    # Open FTP connection in Windows File Explorer for CE devices
+                    $ftpUrl = "ftp://$($Route.Address)"
+                    Write-Host "Opening FTP connection to: $ftpUrl" -ForegroundColor Green
+                    try {
+                        # Open Windows File Explorer with FTP URL
+                        Start-Process "explorer.exe" -ArgumentList $ftpUrl
+                    } catch {
+                        Write-Warning "Failed to open FTP connection in File Explorer. Error: $_"
+                        Write-Host "You can manually enter this URL in File Explorer: $ftpUrl" -ForegroundColor Cyan
                     }
                 }
             }
