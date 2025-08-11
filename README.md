@@ -2,6 +2,8 @@
 
 A PowerShell script that automatically discovers TwinCAT runtime devices on your network via ADS broadcast search and provides direct OS-level connection options including SSH, RDP, WinSCP, and CERHost.
 
+![screenshot](./docs/images/Screenshot.gif)
+
 ## Features
 
 - **Automatic Runtime Discovery**: Uses ADS route discovery to find all TwinCAT runtime devices on the network
@@ -18,12 +20,23 @@ A PowerShell script that automatically discovers TwinCAT runtime devices on your
 
 ## Prerequisites
 
-- **Windows PowerShell or Powershell Core**
+- **[Powershell 7](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows?view=powershell-7.5)**
 - **TcXaeMgmt PowerShell Module 6.2.0 or greater** (automatically installed if not present)
 - **Network Access** to TwinCAT runtime devices
 - **Optional Tools**:
   - WinSCP (for file transfers)
   - Windows built-in RDP client (mstsc.exe)
+
+### Setting PowerShell 7 as Default for .ps1 Files
+
+Since this script requires PowerShell 7, you may want to set it as the default application for opening .ps1 files:
+
+**Using Windows Settings**
+1. Right-click any `.ps1` file
+2. Select "Open with" → "Choose another app"
+3. Browse to PowerShell 7 location (typically `C:\Program Files\PowerShell\7\pwsh.exe`)
+4. Check "Always use this app to open .ps1 files"
+5. Click OK
 
 ## Installation
 
@@ -84,10 +97,12 @@ cd twincat-runtime-discovery
 ## Screenshots/Example Output
 
 ```
- 1 BTN-000f0t53     192.168.1.100   192.168.1.100.1.1   TcBSD/TC3
- 2 BTN-000tzbk7     192.168.1.101   192.168.1.101.1.1   Windows 10
- 3 PC-123456        192.168.1.102   192.168.1.102.1.1   TcRTOS
- 4 CX-345E58        192.168.1.103   192.168.1.103.1.1   CE
+ #  Name                 IP Address      AMS NetID            OS/Runtime
+--  -------------------- --------------- -------------------- ----------
+ 1  BTN-000f0t53         192.168.1.37    5.103.230.114.1.1    TcRTOS 2.0
+ 2  CX-345E58            192.168.1.98    5.52.94.88.1.1       CE7.0
+ 3  Device2              192.168.1.48    169.254.151.200.1.1  Win10 (1607)
+ 4  PC-784766            192.168.1.149   39.120.71.102.1.1    TcBSD 14.2
 
 Select a target by entering its number (or type 'exit' to quit):
 ```
@@ -129,15 +144,6 @@ Enable verbose output for troubleshooting:
 - **Permissions**: May require elevated privileges for some connection types
 - **Auto-Download**: CERHost is downloaded from official Beckhoff servers
 
-
-## Version History
-
-### v1.0.0 (Current)
-- Initial release
-- Support for all major TwinCAT runtime platforms
-- Auto-download CERHost functionality
-- Real-time runtime device discovery
-- Interactive console interface
 
 
 
