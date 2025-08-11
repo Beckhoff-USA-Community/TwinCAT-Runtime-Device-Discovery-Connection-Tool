@@ -288,6 +288,13 @@ function Show-TableAndPrompt {
     )
     try {
         Clear-Host
+        
+        # Display table headers
+        Write-Host ""
+        Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f "#", "Name", "IP Address", "AMS NetID", "OS/Runtime") -ForegroundColor White
+        Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f "--", "--------------------", "---------------", "--------------------", "----------") -ForegroundColor DarkGray
+        
+        # Build and display the table rows
         $table = for ($i = 0; $i -lt $RemoteRoutes.Count; $i++) {
             $route     = $RemoteRoutes[$i]
             $isUnknown = -not (
@@ -306,13 +313,15 @@ function Show-TableAndPrompt {
                 IsUnknown = $isUnknown
             }
         }
+        
         foreach ($row in $table) {
             if ($row.IsUnknown) {
-                Write-Host ("{0,2} {1,-20} {2,-15} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS) -ForegroundColor DarkGray
+                Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS) -ForegroundColor DarkGray
             } else {
-                Write-Host ("{0,2} {1,-20} {2,-15} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS)
+                Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS)
             }
         }
+        
         Write-Host ""
         Write-Host "Select a target by entering its number (or type 'exit' to quit):" -ForegroundColor Cyan
     } catch {
