@@ -514,21 +514,39 @@ function Start-ADSDiscovery {
         [SecureString]$AdminPassword
     )
     $prevTargetListJSON = ''
+    $discoveryAttempts = 0
     do {
         try {
-            $adsRoutes    = Get-AdsRoute -All
+            $discoveryAttempts++
+            Write-Verbose "Discovery attempt #$discoveryAttempts - Forcing fresh ADS route discovery..."
+
+            $adsRoutes    = Get-AdsRoute -All -Force
             $remoteRoutes = $adsRoutes | Where-Object { -not $_.IsLocal } | Sort-Object Name
+
+            Write-Verbose "Discovery completed: Found $($remoteRoutes.Count) remote devices"
+
             if ($remoteRoutes.Count -eq 0) {
+                Write-Verbose "No devices found, showing retry message"
+                # Clear previous JSON when no devices found to ensure fresh display when devices appear
+                $prevTargetListJSON = ''
                 Show-NoTargetsMessage -TimeoutSeconds $TimeoutSeconds
                 $selection = Read-InputWithTimeout -TimeoutSeconds $TimeoutSeconds -AllowRefresh
-                if ($selection -eq 'refresh') { continue }
+                if ($selection -eq 'refresh') {
+                    Write-Verbose "Manual refresh requested, clearing cache and retrying..."
+                    continue
+                }
                 if ($selection -eq 'exit')    { break }
+                Write-Verbose "Timeout reached, retrying discovery..."
                 continue
             }
+
             $currentJSON = $remoteRoutes | ConvertTo-Json -Compress -Depth 5
             if ($prevTargetListJSON -ne $currentJSON) {
+                Write-Verbose "Device list changed, updating display"
                 Show-TableAndPrompt -RemoteRoutes $remoteRoutes
                 $prevTargetListJSON = $currentJSON
+            } else {
+                Write-Verbose "Device list unchanged since last check"
             }
             $selection = Read-InputWithTimeout -TimeoutSeconds $TimeoutSeconds
             if ($selection -eq 'exit') { break }
@@ -563,7 +581,9 @@ function Start-ADSDiscovery {
             # Automatically return to device list - clear the screen and force refresh
             $prevTargetListJSON = ''
         } catch {
-            Write-Error "Error in discovery loop: $_"
+            Write-Error "Error in discovery loop (attempt #$discoveryAttempts): $_"
+            Write-Verbose "Retrying discovery after error..."
+            Start-Sleep -Seconds 2
         }
     } while ($true)
 }
@@ -572,7 +592,8 @@ function Start-ADSDiscovery {
 try {
     $ErrorActionPreference = "Stop"
     $ProgressPreference    = "SilentlyContinue"
-    
+
+
     Test-TcXaeMgmtModule
     Start-ADSDiscovery -TimeoutSeconds $TimeoutSeconds -WinSCPPath $WinSCPPath -CerHostPath $CerHostPath -AdminUserName $AdminUserName -AdminPassword $AdminPassword
 } catch {
