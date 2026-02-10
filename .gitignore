@@ -289,3 +289,6 @@ __pycache__/
 CLAUDE.md
 
 .claude/
+
+# Allow IPv6 interface configuration
+!.ipv6-interface

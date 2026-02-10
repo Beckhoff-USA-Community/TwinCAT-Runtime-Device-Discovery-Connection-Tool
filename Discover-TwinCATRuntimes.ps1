@@ -1,9 +1,12 @@
 ﻿<#
 .SYNOPSIS
-    Discover TwinCAT runtime devices, via ADS broadcast search and offer connection options.
+    Discover TwinCAT runtime devices via ADS broadcast and IPv6 discovery, and offer connection options.
 .DESCRIPTION
-    This script discovers TwinCAT runtime devices on the network and provides connection options such as SSH, RDP, FTP, and WinSCP.
-    It uses the TcXaeMgmt PowerShell module to perform ADS route discovery and allows users to connect to devices via various methods.
+    This script discovers TwinCAT runtime devices on the network using both ADS route discovery and IPv6 neighbor discovery.
+    It provides connection options such as SSH, RDP, FTP, and WinSCP based on the device platform.
+    The script uses the TcXaeMgmt PowerShell module for ADS discovery and IPv6 multicast ping for network neighbor discovery.
+    IPv6 discovery allows finding Beckhoff devices by their MAC address (00-01-05-xx-xx-xx) even before ADS routes are configured.
+    The selected network interface for IPv6 discovery is persisted in .ipv6-interface for future use.
     If CERHost.exe is not present when connecting to a CE device, it will automatically download and extract it.
 .PARAMETER TimeoutSeconds
     Timeout for user input in seconds.
@@ -288,11 +291,11 @@ function Show-TableAndPrompt {
     )
     try {
         Clear-Host
-        
+
         # Display table headers
         Write-Host ""
-        Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f "#", "Name", "IP Address", "AMS NetID", "OS/Runtime") -ForegroundColor White
-        Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f "--", "--------------------", "---------------", "--------------------", "----------") -ForegroundColor DarkGray
+        Write-Host ("{0,2}  {1,-20} {2,-28} {3,-20} {4}" -f "#", "Name", "IP Address", "AMS NetID", "OS/Runtime") -ForegroundColor White
+        Write-Host ("{0,2}  {1,-20} {2,-28} {3,-20} {4}" -f "--", "--------------------", "----------------------------", "--------------------", "----------") -ForegroundColor DarkGray
         
         # Build and display the table rows
         $table = for ($i = 0; $i -lt $RemoteRoutes.Count; $i++) {
@@ -304,21 +307,45 @@ function Show-TableAndPrompt {
                 $route.RTSystem -match "Linux"  -or
                 $route.RTSystem -match "CE"
             )
+
+            # Display IPv6 address if no IPv4 available
+            $ipDisplay = if ($route.Address) {
+                $route.Address
+            } elseif ($route.IPv6Address) {
+                $route.IPv6Address
+            } else {
+                "N/A"
+            }
+
+            # Display NetID or indicate IPv6-only device
+            $netIdDisplay = if ($route.NetId) {
+                $route.NetId
+            } else {
+                "(IPv6 only)"
+            }
+
+            # Format OS/Runtime - don't duplicate "Unknown" if already in RTSystem
+            $osDisplay = if ($isUnknown -and $route.RTSystem -notmatch "Unknown") {
+                "$($route.RTSystem) (Unknown)"
+            } else {
+                $route.RTSystem
+            }
+
             [PSCustomObject]@{
                 Number    = $i + 1
                 Name      = $route.Name
-                IP        = $route.Address
-                AMSNetID  = $route.NetId
-                OS        = if ($isUnknown) { "$($route.RTSystem) (Unknown)" } else { $route.RTSystem }
+                IP        = $ipDisplay
+                AMSNetID  = $netIdDisplay
+                OS        = $osDisplay
                 IsUnknown = $isUnknown
             }
         }
         
         foreach ($row in $table) {
             if ($row.IsUnknown) {
-                Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS) -ForegroundColor DarkGray
+                Write-Host ("{0,2}  {1,-20} {2,-28} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS) -ForegroundColor DarkGray
             } else {
-                Write-Host ("{0,2}  {1,-20} {2,-15} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS)
+                Write-Host ("{0,2}  {1,-20} {2,-28} {3,-20} {4}" -f $row.Number, $row.Name, $row.IP, $row.AMSNetID, $row.OS)
             }
         }
         
@@ -329,17 +356,42 @@ function Show-TableAndPrompt {
     }
 }
 
+function Get-ConnectionIPAddress {
+    [CmdletBinding()]
+    param(
+        [psobject]$Route,
+        [switch]$ForURL
+    )
+
+    if ($Route.Address) {
+        return $Route.Address
+    } elseif ($Route.IPv6Address) {
+        if ($ForURL) {
+            return "[$($Route.IPv6Address)]"  # IPv6 addresses in URLs need brackets
+        } else {
+            return $Route.IPv6Address
+        }
+    } else {
+        throw "No IP address available for device"
+    }
+}
+
 function Get-DeviceManagerUrl {
     [CmdletBinding()]
     param(
         [psobject]$Route
     )
+
+    # Determine IP address (prefer IPv4, fallback to IPv6)
+    $ipAddress = Get-ConnectionIPAddress -Route $Route -ForURL
+
     switch ($Route.RTSystem) {
-        {$_ -like "Win*"}    { return "https://$($Route.Address)/config" }
-        {$_ -like "TcBSD*"}  { return "https://$($Route.Address)" }
-        {$_ -like "TcRTOS*"} { return "http://$($Route.Address)/config" }
-        {$_ -match "Linux"}  { return "https://$($Route.Address)" }
-        {$_ -match "CE"}     { return "https://$($Route.Address)/config" }
+        {$_ -like "Win*"}    { return "https://${ipAddress}/config" }
+        {$_ -like "TcBSD*"}  { return "https://${ipAddress}" }
+        {$_ -like "TcRTOS*"} { return "http://${ipAddress}/config" }
+        {$_ -match "Linux"}  { return "https://${ipAddress}" }
+        {$_ -match "CE"}     { return "https://${ipAddress}/config" }
+        {$_ -match "Unknown"} { return "https://${ipAddress}" }  # Default to HTTPS for unknown
         default                { throw "Unsupported RTSystem type: $($Route.RTSystem)" }
     }
 }
@@ -374,8 +426,9 @@ function Show-ConnectionMenu {
                 break
             }
             ($Route.RTSystem -match "CE") {
-                $isCERHostAvailable = Test-CERHostAvailability -IPAddress $Route.Address
-                $isFTPAvailable = Test-FTPAvailability -IPAddress $Route.Address
+                $ipAddress = Get-ConnectionIPAddress -Route $Route
+                $isCERHostAvailable = Test-CERHostAvailability -IPAddress $ipAddress
+                $isFTPAvailable = Test-FTPAvailability -IPAddress $ipAddress
                 
                 Write-Host "   1) Open Beckhoff Device Manager webpage ($DeviceManagerUrl)"
                 
@@ -392,6 +445,14 @@ function Show-ConnectionMenu {
                     Write-Host "   3) Open FTP connection in Windows File Explorer" -ForegroundColor Red
                     Write-Host "      Note: FTP port (21) is not open. Enable FTP server on the device." -ForegroundColor Yellow
                 }
+                break
+            }
+            ($Route.RTSystem -match "Unknown") {
+                Write-Host "   1) Open Beckhoff Device Manager webpage ($DeviceManagerUrl)"
+                Write-Host "   2) Start SSH session (IPv6)"
+                Write-Host ""
+                Write-Host "   Note: Device discovered via IPv6. Platform type unknown." -ForegroundColor Yellow
+                Write-Host "   SSH will attempt connection - credentials required." -ForegroundColor Yellow
                 break
             }
             default {
@@ -422,13 +483,14 @@ function Invoke-ConnectionChoice {
             }
             '2' {
                 if ($Route.RTSystem -like "Win*") {
+                    $ipAddress = Get-ConnectionIPAddress -Route $Route
                     $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($AdminPassword))
-                    $cmdkeyCommand = "cmdkey /generic:TERMSRV/$($Route.Address) /user:$AdminUserName /pass:$plainPassword"
+                    $cmdkeyCommand = "cmdkey /generic:TERMSRV/$ipAddress /user:$AdminUserName /pass:$plainPassword"
                     cmd /c $cmdkeyCommand | Out-Null
                     $rdpFile = Join-Path $env:TEMP ("$($Route.Name -replace '[\\\/:*?"<>|]', '_').rdp")
                     @"
 screen mode id:i:2
-full address:s:$($Route.Address)
+full address:s:$ipAddress
 desktopwidth:i:1280
 desktopheight:i:720
 session bpp:i:32
@@ -436,13 +498,31 @@ smart sizing:i:1
 "@ | Set-Content $rdpFile -Encoding ASCII
                     Start-Process mstsc.exe $rdpFile
                 } elseif ($Route.RTSystem -like "TcBSD*" -or $Route.RTSystem -match "Linux") {
+                    $ipAddress = Get-ConnectionIPAddress -Route $Route
                     $sshCommand = if ($Route.RTSystem -match "Linux") {
-                        "ssh -m hmac-sha2-512-etm@openssh.com $AdminUserName@$($Route.Address)"
+                        "ssh -m hmac-sha2-512-etm@openssh.com $AdminUserName@$ipAddress"
                     } else {
-                        "ssh $AdminUserName@$($Route.Address)"
+                        "ssh $AdminUserName@$ipAddress"
                     }
                     Start-Process powershell.exe -ArgumentList '-NoExit','-Command',$sshCommand
+                } elseif ($Route.RTSystem -match "Unknown") {
+                    # SSH to IPv6-discovered device
+                    if ($Route.IPv6Address -and $Route.InterfaceIndex) {
+                        # Format: ssh user@ipv6address%interfaceindex
+                        $sshTarget = "$($Route.IPv6Address)%$($Route.InterfaceIndex)"
+                        $sshCommand = "ssh $AdminUserName@$sshTarget"
+                        Write-Host "Connecting via SSH to: $sshTarget" -ForegroundColor Green
+                        Start-Process powershell.exe -ArgumentList '-NoExit','-Command',$sshCommand
+                    } elseif ($Route.Address) {
+                        # Fallback to IPv4 if available
+                        $sshCommand = "ssh $AdminUserName@$($Route.Address)"
+                        Write-Host "Connecting via SSH to: $($Route.Address)" -ForegroundColor Green
+                        Start-Process powershell.exe -ArgumentList '-NoExit','-Command',$sshCommand
+                    } else {
+                        Write-Warning "No IP address available for SSH connection"
+                    }
                 } elseif ($Route.RTSystem -match "CE") {
+                    $ipAddress = Get-ConnectionIPAddress -Route $Route
                     # Check if CERHost exists in script directory, if not download it once
                     if (!(Test-Path $CerHostPath)) {
                         Write-Host "CERHost.exe not found in script directory. Downloading for first-time use..." -ForegroundColor Yellow
@@ -452,11 +532,11 @@ smart sizing:i:1
                             return
                         }
                     }
-                    
+
                     # Start CERHost using the local copy
                     if (Test-Path $CerHostPath) {
                         Write-Host "Starting CERHost from: $CerHostPath" -ForegroundColor Green
-                        Start-Process -FilePath $CerHostPath -ArgumentList $Route.Address
+                        Start-Process -FilePath $CerHostPath -ArgumentList $ipAddress
                     } else {
                         Write-Warning "CERHOST.exe still not found at $CerHostPath after download attempt."
                     }
@@ -464,19 +544,29 @@ smart sizing:i:1
             }
             '3' {
                 if ($Route.RTSystem -like "TcBSD*" -or $Route.RTSystem -match "Linux") {
+                    $ipAddress = Get-ConnectionIPAddress -Route $Route
                     try {
                         if (Test-Path $WinSCPPath) {
                             $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($AdminPassword))
-                            & $WinSCPPath "sftp://${AdminUserName}:$plainPassword@$($Route.Address)/" "/rawsettings" "SftpServer=doas /usr/libexec/sftp-server"
+
+                            # Use appropriate SFTP server path based on OS
+                            $sftpServer = if ($Route.RTSystem -match "Linux") {
+                                "sudo /usr/lib/openssh/sftp-server"
+                            } else {
+                                "doas /usr/libexec/sftp-server"  # TcBSD
+                            }
+
+                            & $WinSCPPath "sftp://${AdminUserName}:$plainPassword@${ipAddress}/" "/rawsettings" "SftpServer=$sftpServer"
                         } else {
-                            & $WinSCPPath "sftp://$($Route.Address)"
+                            & $WinSCPPath "sftp://${ipAddress}"
                         }
                     } catch {
                         Start-Process "https://winscp.net/eng/download.php"
                     }
                 } elseif ($Route.RTSystem -match "CE") {
+                    $ipAddress = Get-ConnectionIPAddress -Route $Route
                     # Open FTP connection in Windows File Explorer for CE devices
-                    $ftpUrl = "ftp://$($Route.Address)"
+                    $ftpUrl = "ftp://${ipAddress}"
                     Write-Host "Opening FTP connection to: $ftpUrl" -ForegroundColor Green
                     try {
                         # Open Windows File Explorer with FTP URL
@@ -504,6 +594,191 @@ smart sizing:i:1
     }
 }
 
+function Get-StoredNetworkInterface {
+    [CmdletBinding()]
+    param(
+        [string]$ConfigFilePath = "$PSScriptRoot\.ipv6-interface"
+    )
+    try {
+        if (Test-Path $ConfigFilePath) {
+            $ifIndexContent = Get-Content $ConfigFilePath -Raw -ErrorAction SilentlyContinue
+            $ifIndex = $ifIndexContent.Trim()
+
+            Write-Verbose "Read interface index from file: '$ifIndex'"
+
+            if ($ifIndex -match '^\d+$') {
+                $ifIndexInt = [int]$ifIndex
+                Write-Verbose "Attempting to load interface with index: $ifIndexInt"
+
+                $adapter = Get-NetAdapter -InterfaceIndex $ifIndexInt -ErrorAction SilentlyContinue
+                if ($adapter -and $adapter.Status -eq 'Up') {
+                    Write-Verbose "Loaded stored interface: [$($adapter.ifIndex)] $($adapter.Name)"
+                    return $adapter
+                } else {
+                    Write-Verbose "Stored interface no longer available or not up"
+                }
+            } else {
+                Write-Verbose "Invalid interface index format in file: '$ifIndex'"
+            }
+        } else {
+            Write-Verbose "Config file not found: $ConfigFilePath"
+        }
+        return $null
+    } catch {
+        Write-Verbose "Error loading stored interface: $_"
+        return $null
+    }
+}
+
+function Select-AndPersistNetworkInterface {
+    [CmdletBinding()]
+    param(
+        [string]$ConfigFilePath = "$PSScriptRoot\.ipv6-interface"
+    )
+    try {
+        Write-Host "`nIPv6 Discovery - Select Network Interface:" -ForegroundColor Cyan
+        Write-Host "-------------------------------------------" -ForegroundColor DarkGray
+
+        $adapters = Get-NetAdapter | Where-Object Status -eq 'Up'
+
+        if ($adapters.Count -eq 0) {
+            Write-Warning "No active network interfaces found"
+            return $null
+        }
+
+        $i = 1
+        foreach ($adapter in $adapters) {
+            $ipv6 = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv6 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.PrefixOrigin -ne 'WellKnown' } |
+                    Select-Object -First 1
+
+            $ipDisplay = if ($ipv6) { $ipv6.IPAddress } else { "No IPv6" }
+            Write-Host "$i. [$($adapter.ifIndex)] $($adapter.Name) - $ipDisplay" -ForegroundColor White
+            $i++
+        }
+
+        Write-Host ""
+        Write-Host "Enter interface number (1-$($adapters.Count)) or 'skip' to disable IPv6 discovery: " -ForegroundColor Yellow -NoNewline
+        $selection = Read-Host
+
+        if ($selection -eq 'skip') {
+            Write-Host "IPv6 discovery disabled" -ForegroundColor Yellow
+            return $null
+        }
+
+        if ($selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $adapters.Count) {
+            $selectedAdapter = $adapters[[int]$selection - 1]
+
+            # Persist the selection (write as string without trailing newline)
+            $selectedAdapter.ifIndex.ToString() | Set-Content $ConfigFilePath -NoNewline -Force
+
+            Write-Verbose "Saved interface index $($selectedAdapter.ifIndex) to $ConfigFilePath"
+            Write-Host "Selected and saved: [$($selectedAdapter.ifIndex)] $($selectedAdapter.Name)" -ForegroundColor Green
+            Write-Host "This interface will be used for future IPv6 discovery" -ForegroundColor Gray
+            Write-Host ""
+
+            return $selectedAdapter
+        } else {
+            Write-Warning "Invalid selection"
+            return $null
+        }
+    } catch {
+        Write-Error "Error in Select-AndPersistNetworkInterface: $_"
+        return $null
+    }
+}
+
+function Invoke-IPv6Discovery {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [object]$NetworkInterface
+    )
+    try {
+        Write-Verbose "Starting IPv6 discovery on interface [$($NetworkInterface.ifIndex)] $($NetworkInterface.Name)"
+
+        # Ping IPv6 multicast to populate neighbor cache
+        $pingResult = ping "ff02::1%$($NetworkInterface.ifIndex)" -n 1 -w 500 2>&1
+        Write-Verbose "IPv6 multicast ping completed"
+
+        # Short delay to allow neighbor cache to populate
+        Start-Sleep -Milliseconds 500
+
+        # Find Beckhoff devices by MAC address (00-01-05-xx-xx-xx)
+        $beckhoffDevices = @(Get-NetNeighbor -LinkLayerAddress "00-01-05*" -AddressFamily IPv6 -ErrorAction SilentlyContinue)
+
+        Write-Verbose "Found $($beckhoffDevices.Count) Beckhoff device(s) via IPv6"
+
+        $results = @()
+        foreach ($device in $beckhoffDevices) {
+            # Try to find corresponding IPv4 address
+            $ipv4Neighbor = Get-NetNeighbor -LinkLayerAddress $device.LinkLayerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue
+
+            $ipv4Address = if ($ipv4Neighbor) { $ipv4Neighbor.IPAddress } else { $null }
+
+            # Extract a device name from MAC address (last 6 digits)
+            $macSuffix = $device.LinkLayerAddress -replace '-','' | Select-Object -Last 6
+            $deviceName = "Beckhoff-$macSuffix"
+
+            $results += [PSCustomObject]@{
+                Name              = $deviceName
+                Address           = $ipv4Address
+                IPv6Address       = $device.IPAddress
+                NetId             = $null
+                RTSystem          = "Unknown (IPv6)"
+                LinkLayerAddress  = $device.LinkLayerAddress
+                DiscoveryMethod   = "IPv6"
+                InterfaceIndex    = $device.InterfaceIndex
+            }
+        }
+
+        return $results
+    } catch {
+        Write-Error "Error in Invoke-IPv6Discovery: $_"
+        return @()
+    }
+}
+
+function Merge-DiscoveryResults {
+    [CmdletBinding()]
+    param(
+        [array]$AdsRoutes,
+        [array]$IPv6Devices
+    )
+    try {
+        $merged = @()
+        $ipv4Addresses = @{}
+
+        # Add all ADS routes first
+        foreach ($route in $AdsRoutes) {
+            $merged += $route
+            if ($route.Address) {
+                $ipv4Addresses[$route.Address] = $true
+            }
+        }
+
+        # Add IPv6-discovered devices that don't have a matching IPv4 in ADS routes
+        foreach ($device in $IPv6Devices) {
+            $alreadyExists = $false
+
+            # Check if this device was already found via ADS (by IPv4 address)
+            if ($device.Address -and $ipv4Addresses.ContainsKey($device.Address)) {
+                $alreadyExists = $true
+                Write-Verbose "IPv6 device $($device.Name) already found via ADS, skipping duplicate"
+            }
+
+            if (-not $alreadyExists) {
+                $merged += $device
+            }
+        }
+
+        return $merged
+    } catch {
+        Write-Error "Error in Merge-DiscoveryResults: $_"
+        return $AdsRoutes
+    }
+}
+
 function Start-ADSDiscovery {
     [CmdletBinding()]
     param(
@@ -511,7 +786,8 @@ function Start-ADSDiscovery {
         [string]$WinSCPPath,
         [string]$CerHostPath,
         [string]$AdminUserName,
-        [SecureString]$AdminPassword
+        [SecureString]$AdminPassword,
+        [object]$IPv6Interface = $null
     )
     $prevTargetListJSON = ''
     $discoveryAttempts = 0
@@ -523,7 +799,20 @@ function Start-ADSDiscovery {
             $adsRoutes    = Get-AdsRoute -All -Force
             $remoteRoutes = $adsRoutes | Where-Object { -not $_.IsLocal } | Sort-Object Name
 
-            Write-Verbose "Discovery completed: Found $($remoteRoutes.Count) remote devices"
+            Write-Verbose "ADS Discovery completed: Found $($remoteRoutes.Count) remote devices"
+
+            # Perform IPv6 discovery if interface is configured
+            $ipv6Devices = @()
+            if ($IPv6Interface) {
+                Write-Verbose "Performing IPv6 discovery on interface [$($IPv6Interface.ifIndex)] $($IPv6Interface.Name)"
+                $ipv6Devices = Invoke-IPv6Discovery -NetworkInterface $IPv6Interface
+                Write-Verbose "IPv6 Discovery completed: Found $($ipv6Devices.Count) devices"
+            }
+
+            # Merge ADS and IPv6 results
+            $remoteRoutes = Merge-DiscoveryResults -AdsRoutes $remoteRoutes -IPv6Devices $ipv6Devices
+
+            Write-Verbose "Total devices after merge: $($remoteRoutes.Count)"
 
             if ($remoteRoutes.Count -eq 0) {
                 Write-Verbose "No devices found, showing retry message"
@@ -564,7 +853,8 @@ function Start-ADSDiscovery {
                 $selectedRoute.RTSystem -like "TcBSD*"  -or
                 $selectedRoute.RTSystem -like "TcRTOS*" -or
                 $selectedRoute.RTSystem -match "Linux"  -or
-                $selectedRoute.RTSystem -match "CE"
+                $selectedRoute.RTSystem -match "CE"     -or
+                $selectedRoute.RTSystem -match "Unknown"
             )) {
                 Write-Warning "Unsupported device type: $($selectedRoute.RTSystem)"
                 Start-Sleep -Seconds 2
@@ -593,9 +883,28 @@ try {
     $ErrorActionPreference = "Stop"
     $ProgressPreference    = "SilentlyContinue"
 
-
     Test-TcXaeMgmtModule
-    Start-ADSDiscovery -TimeoutSeconds $TimeoutSeconds -WinSCPPath $WinSCPPath -CerHostPath $CerHostPath -AdminUserName $AdminUserName -AdminPassword $AdminPassword
+
+    # Initialize IPv6 discovery interface
+    Write-Verbose "Checking for stored IPv6 interface configuration..."
+    $ipv6Interface = Get-StoredNetworkInterface
+
+    if (-not $ipv6Interface) {
+        # No stored interface or it's no longer available - prompt for selection
+        Write-Verbose "No stored interface found, prompting for selection"
+        $ipv6Interface = Select-AndPersistNetworkInterface
+
+        if (-not $ipv6Interface) {
+            Write-Host "IPv6 discovery disabled - continuing with ADS discovery only" -ForegroundColor Yellow
+            Write-Host ""
+        }
+    } else {
+        Write-Host "Using stored IPv6 interface: [$($ipv6Interface.ifIndex)] $($ipv6Interface.Name)" -ForegroundColor Green
+        Write-Host "To change interface, delete the file: $PSScriptRoot\.ipv6-interface" -ForegroundColor Gray
+        Write-Host ""
+    }
+
+    Start-ADSDiscovery -TimeoutSeconds $TimeoutSeconds -WinSCPPath $WinSCPPath -CerHostPath $CerHostPath -AdminUserName $AdminUserName -AdminPassword $AdminPassword -IPv6Interface $ipv6Interface
 } catch {
     Write-Error "Fatal error: $_"
 }
